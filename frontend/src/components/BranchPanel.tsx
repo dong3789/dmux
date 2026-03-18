@@ -14,12 +14,22 @@ export function BranchPanel({ workspaceName, worktrees, onOpenBranch, onAddBranc
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showInput, setShowInput] = useState(false);
   const [branchName, setBranchName] = useState('');
+  const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
 
   const handleAdd = () => {
     if (branchName.trim()) {
       onAddBranch(branchName.trim());
       setBranchName('');
       setShowInput(false);
+    }
+  };
+
+  const handleDelete = (path: string) => {
+    if (confirmDeletePath === path) {
+      onRemoveBranch(path);
+      setConfirmDeletePath(null);
+    } else {
+      setConfirmDeletePath(path);
     }
   };
 
@@ -50,6 +60,7 @@ export function BranchPanel({ workspaceName, worktrees, onOpenBranch, onAddBranc
       <div className="branch-list">
         {worktrees.map(wt => {
           const isExpanded = expandedId === wt.path;
+          const isConfirming = confirmDeletePath === wt.path;
           return (
             <div key={wt.path} className="accordion-item">
               <div
@@ -83,9 +94,21 @@ export function BranchPanel({ workspaceName, worktrees, onOpenBranch, onAddBranc
                       Open Terminal
                     </button>
                     {!wt.is_main && (
-                      <button className="bp-btn-delete" onClick={() => onRemoveBranch(wt.path)}>
-                        Delete
-                      </button>
+                      isConfirming ? (
+                        <div className="delete-confirm">
+                          <span className="delete-confirm-text">Delete worktree?</span>
+                          <button className="bp-btn-confirm-yes" onClick={() => handleDelete(wt.path)}>
+                            Yes, delete
+                          </button>
+                          <button className="bp-btn-confirm-no" onClick={() => setConfirmDeletePath(null)}>
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button className="bp-btn-delete" onClick={() => handleDelete(wt.path)}>
+                          Delete
+                        </button>
+                      )
                     )}
                   </div>
                 </div>

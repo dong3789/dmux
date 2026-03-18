@@ -207,3 +207,44 @@
   border-color: var(--accent-red);
   color: var(--accent-red);
 }
+
+.delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.delete-confirm-text {
+  font-size: 11px;
+  color: var(--accent-red);
+  font-weight: 500;
+}
+
+.bp-btn-confirm-yes {
+  background: var(--accent-red);
+  color: #fff;
+  border: none;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.bp-btn-confirm-yes:hover {
+  opacity: 0.85;
+}
+
+.bp-btn-confirm-no {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.bp-btn-confirm-no:hover {
+  color: var(--text-secondary);
+}

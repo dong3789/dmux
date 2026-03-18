@@ -65,6 +65,9 @@ fn spawn_terminal(
     // Always spawn a login shell (tmux doesn't work well inside embedded PTY)
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = CommandBuilder::new(shell);
+    cmd.env("LANG", "en_US.UTF-8");
+    cmd.env("LC_ALL", "en_US.UTF-8");
+    cmd.env("TERM", "xterm-256color");
     if let Some(ref dir) = cwd {
         cmd.cwd(dir);
     }
