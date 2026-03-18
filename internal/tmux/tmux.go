@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -101,12 +102,12 @@ func (c *Client) KillSession(name string) error {
 	return err
 }
 
-// AttachSession attaches to a tmux session (replaces current process).
+// AttachSession attaches to a tmux session.
 func (c *Client) AttachSession(name string) error {
 	cmd := exec.Command(c.Binary, "attach-session", "-t", name)
-	cmd.Stdin = nil // will be set by caller
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 

@@ -181,7 +181,11 @@ func handleWorktree() {
 			if branch == "" {
 				branch = "(detached)"
 			}
-			fmt.Printf("  %s  %s  %s\n", branch, wt.Path, wt.HEAD[:8])
+			head := wt.HEAD
+		if len(head) > 8 {
+			head = head[:8]
+		}
+		fmt.Printf("  %s  %s  %s\n", branch, wt.Path, head)
 		}
 	case "add":
 		if len(os.Args) < 4 {

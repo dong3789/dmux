@@ -94,10 +94,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsMsg:
 		m.sessions = msg
 		m.err = nil
+		if m.cursor >= len(m.sessions) && m.cursor > 0 {
+			m.cursor = len(m.sessions) - 1
+		}
 		return m, nil
 	case worktreesMsg:
 		m.worktrees = msg
 		m.err = nil
+		if m.cursor >= len(m.worktrees) && m.cursor > 0 {
+			m.cursor = len(m.worktrees) - 1
+		}
 		return m, nil
 	case errMsg:
 		m.err = msg.err
@@ -142,6 +148,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+
+	// Clear stale status message on any key press
+	m.message = ""
 
 	switch {
 	case key.Matches(msg, keys.Quit):
@@ -456,9 +465,3 @@ func sanitizeSessionName(name string) string {
 	return r.Replace(name)
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

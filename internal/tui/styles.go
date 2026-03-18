@@ -10,8 +10,6 @@ var (
 	colorWarning   = lipgloss.Color("#F59E0B") // amber
 	colorDanger    = lipgloss.Color("#EF4444") // red
 	colorMuted     = lipgloss.Color("#6B7280") // gray
-	colorBg        = lipgloss.Color("#1F2937") // dark bg
-	colorBgLight   = lipgloss.Color("#374151") // lighter bg
 
 	// Styles
 	titleStyle = lipgloss.NewStyle().
@@ -43,11 +41,6 @@ var (
 
 	statusDirtyStyle = lipgloss.NewStyle().
 				Foreground(colorWarning)
-
-	panelStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorPrimary).
-			Padding(0, 1)
 
 	helpStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
