@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import type { LayoutNode, PaneNode, SplitNode, SplitDirection } from '../types';
 
 function generateId(): string {
@@ -59,6 +60,41 @@ function updateSizesInTree(node: LayoutNode, splitId: string, sizes: number[]): 
 export function usePaneLayout() {
   const [layout, setLayout] = useState<LayoutNode | null>(null);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const saveTimer = useRef<number | null>(null);
+
+  // Load layout on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const json = await invoke<string>('load_layout');
+        const parsed = JSON.parse(json);
+        if (parsed) {
+          setLayout(parsed);
+          // Find first terminal pane to set as active
+          const findFirst = (node: LayoutNode): string | null => {
+            if (node.type === 'terminal') return node.id;
+            for (const child of node.children) {
+              const found = findFirst(child);
+              if (found) return found;
+            }
+            return null;
+          };
+          setActivePaneId(findFirst(parsed));
+        }
+      } catch { /* ignore */ }
+      setLoaded(true);
+    })();
+  }, []);
+
+  // Save layout on change (debounced)
+  useEffect(() => {
+    if (!loaded) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      invoke('save_layout', { data: JSON.stringify(layout) }).catch(console.error);
+    }, 500);
+  }, [layout, loaded]);
 
   const addPane = useCallback((sessionName: string, worktreePath: string) => {
     const newPane: PaneNode = {
@@ -73,7 +109,6 @@ export function usePaneLayout() {
         setActivePaneId(newPane.id);
         return newPane;
       }
-      // Split the active pane or root
       const splitNode: SplitNode = {
         id: generateId(),
         type: 'split',
@@ -157,5 +192,6 @@ export function usePaneLayout() {
     closePane,
     setActivePaneId,
     updateSizes,
+    loaded,
   };
 }

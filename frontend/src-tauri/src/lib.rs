@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
@@ -62,15 +64,20 @@ fn spawn_terminal(
         .openpty(pty_size)
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    // Always spawn a login shell (tmux doesn't work well inside embedded PTY)
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let mut cmd = CommandBuilder::new(shell);
+    // Use tmux for session persistence — attach or create
+    let mut cmd = CommandBuilder::new("/opt/homebrew/bin/tmux");
+    cmd.env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+    cmd.arg("new-session");
+    cmd.arg("-A");  // attach if exists, create if not
+    cmd.arg("-s");
+    cmd.arg(&session_name);
+    if let Some(ref dir) = cwd {
+        cmd.arg("-c");
+        cmd.arg(dir);
+    }
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("LC_ALL", "en_US.UTF-8");
     cmd.env("TERM", "xterm-256color");
-    if let Some(ref dir) = cwd {
-        cmd.cwd(dir);
-    }
 
     let _child = pair
         .slave
@@ -102,12 +109,26 @@ fn spawn_terminal(
     let event_name = format!("pty-output-{}", id);
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app.emit(&event_name, data);
+                    pending.extend_from_slice(&buf[..n]);
+                    // Find the last valid UTF-8 boundary
+                    let valid_len = {
+                        let mut len = pending.len();
+                        while len > 0 && std::str::from_utf8(&pending[..len]).is_err() {
+                            len -= 1;
+                        }
+                        len
+                    };
+                    if valid_len > 0 {
+                        let data = String::from_utf8(pending[..valid_len].to_vec())
+                            .unwrap_or_default();
+                        let _ = app.emit(&event_name, data);
+                        pending = pending[valid_len..].to_vec();
+                    }
                 }
                 Err(_) => break,
             }
@@ -145,6 +166,44 @@ fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> 
     let mut ptys = state.ptys.lock().unwrap();
     ptys.remove(&id);
     Ok(())
+}
+
+fn config_path() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    Ok(PathBuf::from(home).join(".config").join("dmux"))
+}
+
+#[tauri::command]
+fn save_workspaces(data: String) -> Result<(), String> {
+    let dir = config_path()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    fs::write(dir.join("workspaces.json"), data)
+        .map_err(|e| format!("Failed to write: {}", e))
+}
+
+#[tauri::command]
+fn load_workspaces() -> Result<String, String> {
+    let path = config_path()?.join("workspaces.json");
+    if !path.exists() {
+        return Ok("[]".to_string());
+    }
+    fs::read_to_string(path).map_err(|e| format!("Failed to read: {}", e))
+}
+
+#[tauri::command]
+fn save_layout(data: String) -> Result<(), String> {
+    let dir = config_path()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed: {}", e))?;
+    fs::write(dir.join("layout.json"), data).map_err(|e| format!("Failed: {}", e))
+}
+
+#[tauri::command]
+fn load_layout() -> Result<String, String> {
+    let path = config_path()?.join("layout.json");
+    if !path.exists() {
+        return Ok("null".to_string());
+    }
+    fs::read_to_string(path).map_err(|e| format!("Failed: {}", e))
 }
 
 #[tauri::command]
@@ -351,6 +410,10 @@ pub fn run() {
             remove_worktree,
             get_repo_root,
             validate_repo_path,
+            save_workspaces,
+            load_workspaces,
+            save_layout,
+            load_layout,
             spawn_terminal,
             write_terminal,
             resize_terminal,

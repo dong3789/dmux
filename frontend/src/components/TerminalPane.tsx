@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { invoke } from '@tauri-apps/api/core';
@@ -20,12 +20,14 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const idRef = useRef<string>(sessionName);
+  const [composingText, setComposingText] = useState('');
 
   useEffect(() => {
     if (!containerRef.current || !sessionName) return;
 
     const term = new Terminal({
-      cursorBlink: true,
+      cursorBlink: false,
+      cursorStyle: 'block',
       fontSize: 13,
       fontFamily: "'SF Mono', 'Menlo', 'Monaco', monospace",
       theme: {
@@ -42,11 +44,11 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
       },
     });
 
-    // Intercept split shortcuts
     term.attachCustomKeyEventHandler((e) => {
-      if (e.metaKey && e.key === 'd') return false;
-      if (e.metaKey && e.shiftKey && e.key === 'D') return false;
-      if (e.metaKey && e.key === 'w') return false;
+      if (e.keyCode === 229 || e.isComposing) return false;
+      if (e.metaKey && e.key.toLowerCase() === 'd') return false;
+      if (e.metaKey && e.key.toLowerCase() === 'w') return false;
+      if (e.metaKey && e.key.toLowerCase() === 't') return false;
       return true;
     });
 
@@ -57,6 +59,87 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
 
     termRef.current = term;
     fitRef.current = fit;
+
+    // IME input element
+    const imeInput = document.createElement('input');
+    imeInput.className = 'ime-input';
+    imeInput.setAttribute('autocapitalize', 'off');
+    imeInput.setAttribute('autocomplete', 'off');
+    imeInput.setAttribute('autocorrect', 'off');
+    imeInput.setAttribute('spellcheck', 'false');
+    containerRef.current.appendChild(imeInput);
+
+    let composing = false;
+
+    imeInput.addEventListener('compositionstart', () => {
+      composing = true;
+    });
+
+    imeInput.addEventListener('compositionupdate', (e: CompositionEvent) => {
+      setComposingText(e.data || '');
+    });
+
+    imeInput.addEventListener('compositionend', (e: CompositionEvent) => {
+      composing = false;
+      setComposingText('');
+      if (e.data) {
+        invoke('write_terminal', { id: idRef.current, data: e.data }).catch(console.error);
+      }
+      imeInput.value = '';
+    });
+
+    imeInput.addEventListener('input', (e: Event) => {
+      if (composing) return;
+      const ie = e as InputEvent;
+      if (ie.data) {
+        invoke('write_terminal', { id: idRef.current, data: ie.data }).catch(console.error);
+        imeInput.value = '';
+      }
+    });
+
+    imeInput.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (composing) return;
+      if (e.key === 'Backspace') {
+        invoke('write_terminal', { id: idRef.current, data: '\x7f' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.key === 'Enter') {
+        invoke('write_terminal', { id: idRef.current, data: '\r' }).catch(console.error);
+        imeInput.value = '';
+        e.preventDefault();
+      } else if (e.key === 'Escape') {
+        invoke('write_terminal', { id: idRef.current, data: '\x1b' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.key === 'Tab') {
+        invoke('write_terminal', { id: idRef.current, data: '\t' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.key === 'ArrowUp') {
+        invoke('write_terminal', { id: idRef.current, data: '\x1b[A' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.key === 'ArrowDown') {
+        invoke('write_terminal', { id: idRef.current, data: '\x1b[B' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.key === 'ArrowRight') {
+        invoke('write_terminal', { id: idRef.current, data: '\x1b[C' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.key === 'ArrowLeft') {
+        invoke('write_terminal', { id: idRef.current, data: '\x1b[D' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.ctrlKey && e.key === 'c') {
+        invoke('write_terminal', { id: idRef.current, data: '\x03' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.ctrlKey && e.key === 'z') {
+        invoke('write_terminal', { id: idRef.current, data: '\x1a' }).catch(console.error);
+        e.preventDefault();
+      } else if (e.ctrlKey && e.key === 'l') {
+        invoke('write_terminal', { id: idRef.current, data: '\x0c' }).catch(console.error);
+        e.preventDefault();
+      }
+    });
+
+    const bodyEl = containerRef.current;
+    const focusIME = () => imeInput.focus();
+    bodyEl.addEventListener('click', focusIME);
+    setTimeout(focusIME, 100);
 
     let unlisten: (() => void) | null = null;
     let disposed = false;
@@ -78,7 +161,8 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
         });
 
         term.onData((data) => {
-          if (!disposed) invoke('write_terminal', { id, data }).catch(console.error);
+          if (disposed) return;
+          invoke('write_terminal', { id, data }).catch(console.error);
         });
       } catch (e) {
         if (!disposed) term.write(`\r\nFailed to connect: ${e}\r\n`);
@@ -103,6 +187,8 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
     return () => {
       disposed = true;
       observer.disconnect();
+      bodyEl.removeEventListener('click', focusIME);
+      if (imeInput.parentNode) imeInput.parentNode.removeChild(imeInput);
       if (unlisten) unlisten();
       invoke('close_terminal', { id: idRef.current }).catch(() => {});
       term.dispose();
@@ -122,6 +208,12 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
         <button className="tp-close" onClick={(e) => { e.stopPropagation(); onClose(paneId); }}>✕</button>
       </div>
       <div className="tp-body" ref={containerRef} />
+      {composingText && (
+        <div className="tp-compose-bar">
+          <span className="tp-compose-label">IME</span>
+          <span className="tp-compose-text">{composingText}</span>
+        </div>
+      )}
     </div>
   );
 }

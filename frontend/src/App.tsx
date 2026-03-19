@@ -20,20 +20,24 @@ function App() {
   const {
     layout, activePaneId, addPane, splitPane,
     closePane, setActivePaneId, updateSizes,
+    loaded: paneLoaded,
   } = usePaneLayout();
 
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [error, setError] = useState('');
   const initialSpawned = useRef(false);
 
-  // Spawn a default terminal on first load
+  // Spawn a default terminal only if no saved layout
   useEffect(() => {
     if (initialSpawned.current) return;
+    if (!paneLoaded) return;
     initialSpawned.current = true;
-    const home = '/Users/yoon';
-    termCounter++;
-    addPane(`shell-${termCounter}`, home);
-  }, []);
+    if (!layout) {
+      const home = '/Users/yoon';
+      termCounter++;
+      addPane(`shell-${termCounter}`, home);
+    }
+  }, [paneLoaded]);
 
   const fetchWorktrees = useCallback(async () => {
     if (!activeWorkspace) { setWorktrees([]); return; }
