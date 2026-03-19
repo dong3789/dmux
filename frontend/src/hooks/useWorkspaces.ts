@@ -21,7 +21,8 @@ export function useWorkspaces() {
         if (parsed.length > 0) {
           setActiveWorkspaceId(parsed[0].id);
         }
-      } catch {
+      } catch (e) {
+        console.error('Failed to load workspaces:', e);
         setWorkspaces([]);
       }
       setLoaded(true);

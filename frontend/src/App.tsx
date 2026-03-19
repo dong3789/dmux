@@ -33,9 +33,11 @@ function App() {
     if (!paneLoaded) return;
     initialSpawned.current = true;
     if (!layout) {
-      const home = '/Users/yoon';
-      termCounter++;
-      addPane(`shell-${termCounter}`, home);
+      (async () => {
+        const home = await invoke<string>('get_home_dir').catch(() => '/tmp');
+        termCounter++;
+        addPane(`shell-${termCounter}`, home);
+      })();
     }
   }, [paneLoaded]);
 
@@ -56,9 +58,10 @@ function App() {
   }, [fetchWorktrees]);
 
   // Open new default terminal
-  const openNewTerminal = useCallback(() => {
+  const openNewTerminal = useCallback(async () => {
     termCounter++;
-    const cwd = activeWorkspace?.repoPath || '/Users/yoon';
+    const cwd = activeWorkspace?.repoPath
+      || await invoke<string>('get_home_dir').catch(() => '/tmp');
     addPane(`shell-${termCounter}`, cwd);
   }, [addPane, activeWorkspace]);
 

@@ -20,7 +20,15 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const idRef = useRef<string>(sessionName);
+  const imeInputRef = useRef<HTMLInputElement | null>(null);
   const [composingText, setComposingText] = useState('');
+
+  // Focus IME input when pane becomes active
+  useEffect(() => {
+    if (isActive && imeInputRef.current) {
+      imeInputRef.current.focus();
+    }
+  }, [isActive]);
 
   useEffect(() => {
     if (!containerRef.current || !sessionName) return;
@@ -68,23 +76,22 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
     imeInput.setAttribute('autocorrect', 'off');
     imeInput.setAttribute('spellcheck', 'false');
     containerRef.current.appendChild(imeInput);
+    imeInputRef.current = imeInput;
+
+    const writeToTerminal = (data: string) => {
+      invoke('write_terminal', { id: idRef.current, data }).catch(console.error);
+    };
 
     let composing = false;
 
-    imeInput.addEventListener('compositionstart', () => {
-      composing = true;
-    });
-
+    imeInput.addEventListener('compositionstart', () => { composing = true; });
     imeInput.addEventListener('compositionupdate', (e: CompositionEvent) => {
       setComposingText(e.data || '');
     });
-
     imeInput.addEventListener('compositionend', (e: CompositionEvent) => {
       composing = false;
       setComposingText('');
-      if (e.data) {
-        invoke('write_terminal', { id: idRef.current, data: e.data }).catch(console.error);
-      }
+      if (e.data) writeToTerminal(e.data);
       imeInput.value = '';
     });
 
@@ -92,54 +99,41 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
       if (composing) return;
       const ie = e as InputEvent;
       if (ie.data) {
-        invoke('write_terminal', { id: idRef.current, data: ie.data }).catch(console.error);
+        writeToTerminal(ie.data);
         imeInput.value = '';
       }
     });
 
     imeInput.addEventListener('keydown', (e: KeyboardEvent) => {
       if (composing) return;
-      if (e.key === 'Backspace') {
-        invoke('write_terminal', { id: idRef.current, data: '\x7f' }).catch(console.error);
+
+      const keyMap: Record<string, string> = {
+        'Backspace': '\x7f',
+        'Enter': '\r',
+        'Escape': '\x1b',
+        'Tab': '\t',
+        'ArrowUp': '\x1b[A',
+        'ArrowDown': '\x1b[B',
+        'ArrowRight': '\x1b[C',
+        'ArrowLeft': '\x1b[D',
+      };
+
+      if (keyMap[e.key]) {
+        writeToTerminal(keyMap[e.key]);
+        if (e.key === 'Enter') imeInput.value = '';
         e.preventDefault();
-      } else if (e.key === 'Enter') {
-        invoke('write_terminal', { id: idRef.current, data: '\r' }).catch(console.error);
-        imeInput.value = '';
-        e.preventDefault();
-      } else if (e.key === 'Escape') {
-        invoke('write_terminal', { id: idRef.current, data: '\x1b' }).catch(console.error);
-        e.preventDefault();
-      } else if (e.key === 'Tab') {
-        invoke('write_terminal', { id: idRef.current, data: '\t' }).catch(console.error);
-        e.preventDefault();
-      } else if (e.key === 'ArrowUp') {
-        invoke('write_terminal', { id: idRef.current, data: '\x1b[A' }).catch(console.error);
-        e.preventDefault();
-      } else if (e.key === 'ArrowDown') {
-        invoke('write_terminal', { id: idRef.current, data: '\x1b[B' }).catch(console.error);
-        e.preventDefault();
-      } else if (e.key === 'ArrowRight') {
-        invoke('write_terminal', { id: idRef.current, data: '\x1b[C' }).catch(console.error);
-        e.preventDefault();
-      } else if (e.key === 'ArrowLeft') {
-        invoke('write_terminal', { id: idRef.current, data: '\x1b[D' }).catch(console.error);
-        e.preventDefault();
-      } else if (e.ctrlKey && e.key === 'c') {
-        invoke('write_terminal', { id: idRef.current, data: '\x03' }).catch(console.error);
-        e.preventDefault();
-      } else if (e.ctrlKey && e.key === 'z') {
-        invoke('write_terminal', { id: idRef.current, data: '\x1a' }).catch(console.error);
-        e.preventDefault();
-      } else if (e.ctrlKey && e.key === 'l') {
-        invoke('write_terminal', { id: idRef.current, data: '\x0c' }).catch(console.error);
-        e.preventDefault();
+      } else if (e.ctrlKey) {
+        const ctrlMap: Record<string, string> = { 'c': '\x03', 'z': '\x1a', 'l': '\x0c' };
+        if (ctrlMap[e.key]) {
+          writeToTerminal(ctrlMap[e.key]);
+          e.preventDefault();
+        }
       }
     });
 
     const bodyEl = containerRef.current;
     const focusIME = () => imeInput.focus();
     bodyEl.addEventListener('click', focusIME);
-    setTimeout(focusIME, 100);
 
     let unlisten: (() => void) | null = null;
     let disposed = false;
@@ -161,8 +155,7 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
         });
 
         term.onData((data) => {
-          if (disposed) return;
-          invoke('write_terminal', { id, data }).catch(console.error);
+          if (!disposed) writeToTerminal(data);
         });
       } catch (e) {
         if (!disposed) term.write(`\r\nFailed to connect: ${e}\r\n`);
@@ -189,6 +182,7 @@ export function TerminalPane({ paneId, sessionName, worktreePath, isActive, onFo
       observer.disconnect();
       bodyEl.removeEventListener('click', focusIME);
       if (imeInput.parentNode) imeInput.parentNode.removeChild(imeInput);
+      imeInputRef.current = null;
       if (unlisten) unlisten();
       invoke('close_terminal', { id: idRef.current }).catch(() => {});
       term.dispose();

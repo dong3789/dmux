@@ -65,8 +65,11 @@ fn spawn_terminal(
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
     // Use tmux for session persistence — attach or create
-    let mut cmd = CommandBuilder::new("/opt/homebrew/bin/tmux");
-    cmd.env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+    let tmux_path = which::which("tmux")
+        .unwrap_or_else(|_| std::path::PathBuf::from("/opt/homebrew/bin/tmux"));
+    let mut cmd = CommandBuilder::new(tmux_path);
+    cmd.env("PATH", std::env::var("PATH")
+        .unwrap_or_else(|_| "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()));
     cmd.arg("new-session");
     cmd.arg("-A");  // attach if exists, create if not
     cmd.arg("-s");
@@ -115,19 +118,14 @@ fn spawn_terminal(
                 Ok(0) => break,
                 Ok(n) => {
                     pending.extend_from_slice(&buf[..n]);
-                    // Find the last valid UTF-8 boundary
-                    let valid_len = {
-                        let mut len = pending.len();
-                        while len > 0 && std::str::from_utf8(&pending[..len]).is_err() {
-                            len -= 1;
-                        }
-                        len
+                    let valid_up_to = match std::str::from_utf8(&pending) {
+                        Ok(_) => pending.len(),
+                        Err(e) => e.valid_up_to(),
                     };
-                    if valid_len > 0 {
-                        let data = String::from_utf8(pending[..valid_len].to_vec())
-                            .unwrap_or_default();
+                    if valid_up_to > 0 {
+                        let data = String::from_utf8(pending[..valid_up_to].to_vec()).unwrap();
                         let _ = app.emit(&event_name, data);
-                        pending = pending[valid_len..].to_vec();
+                        pending.drain(..valid_up_to);
                     }
                 }
                 Err(_) => break,
@@ -169,8 +167,9 @@ fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> 
 }
 
 fn config_path() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    Ok(PathBuf::from(home).join(".config").join("dmux"))
+    dirs::config_dir()
+        .map(|path| path.join("dmux"))
+        .ok_or_else(|| "Could not find config directory".to_string())
 }
 
 #[tauri::command]
@@ -193,8 +192,8 @@ fn load_workspaces() -> Result<String, String> {
 #[tauri::command]
 fn save_layout(data: String) -> Result<(), String> {
     let dir = config_path()?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed: {}", e))?;
-    fs::write(dir.join("layout.json"), data).map_err(|e| format!("Failed: {}", e))
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    fs::write(dir.join("layout.json"), data).map_err(|e| format!("Failed to write layout: {}", e))
 }
 
 #[tauri::command]
@@ -204,6 +203,13 @@ fn load_layout() -> Result<String, String> {
         return Ok("null".to_string());
     }
     fs::read_to_string(path).map_err(|e| format!("Failed: {}", e))
+}
+
+#[tauri::command]
+fn get_home_dir() -> Result<String, String> {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "Could not find home directory".to_string())
 }
 
 #[tauri::command]
@@ -409,6 +415,7 @@ pub fn run() {
             add_worktree,
             remove_worktree,
             get_repo_root,
+            get_home_dir,
             validate_repo_path,
             save_workspaces,
             load_workspaces,

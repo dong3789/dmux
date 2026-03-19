@@ -82,7 +82,7 @@ export function usePaneLayout() {
           };
           setActivePaneId(findFirst(parsed));
         }
-      } catch { /* ignore */ }
+      } catch (e) { console.error('Failed to load layout:', e); }
       setLoaded(true);
     })();
   }, []);
