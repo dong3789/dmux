@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
@@ -62,15 +64,23 @@ fn spawn_terminal(
         .openpty(pty_size)
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    // Always spawn a login shell (tmux doesn't work well inside embedded PTY)
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let mut cmd = CommandBuilder::new(shell);
+    // Use tmux for session persistence — attach or create
+    let tmux_path = which::which("tmux")
+        .unwrap_or_else(|_| std::path::PathBuf::from("/opt/homebrew/bin/tmux"));
+    let mut cmd = CommandBuilder::new(tmux_path);
+    cmd.env("PATH", std::env::var("PATH")
+        .unwrap_or_else(|_| "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()));
+    cmd.arg("new-session");
+    cmd.arg("-A");  // attach if exists, create if not
+    cmd.arg("-s");
+    cmd.arg(&session_name);
+    if let Some(ref dir) = cwd {
+        cmd.arg("-c");
+        cmd.arg(dir);
+    }
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("LC_ALL", "en_US.UTF-8");
     cmd.env("TERM", "xterm-256color");
-    if let Some(ref dir) = cwd {
-        cmd.cwd(dir);
-    }
 
     let _child = pair
         .slave
@@ -102,12 +112,21 @@ fn spawn_terminal(
     let event_name = format!("pty-output-{}", id);
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app.emit(&event_name, data);
+                    pending.extend_from_slice(&buf[..n]);
+                    let valid_up_to = match std::str::from_utf8(&pending) {
+                        Ok(_) => pending.len(),
+                        Err(e) => e.valid_up_to(),
+                    };
+                    if valid_up_to > 0 {
+                        let data = String::from_utf8(pending[..valid_up_to].to_vec()).unwrap();
+                        let _ = app.emit(&event_name, data);
+                        pending.drain(..valid_up_to);
+                    }
                 }
                 Err(_) => break,
             }
@@ -145,6 +164,52 @@ fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> 
     let mut ptys = state.ptys.lock().unwrap();
     ptys.remove(&id);
     Ok(())
+}
+
+fn config_path() -> Result<PathBuf, String> {
+    dirs::config_dir()
+        .map(|path| path.join("dmux"))
+        .ok_or_else(|| "Could not find config directory".to_string())
+}
+
+#[tauri::command]
+fn save_workspaces(data: String) -> Result<(), String> {
+    let dir = config_path()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    fs::write(dir.join("workspaces.json"), data)
+        .map_err(|e| format!("Failed to write: {}", e))
+}
+
+#[tauri::command]
+fn load_workspaces() -> Result<String, String> {
+    let path = config_path()?.join("workspaces.json");
+    if !path.exists() {
+        return Ok("[]".to_string());
+    }
+    fs::read_to_string(path).map_err(|e| format!("Failed to read: {}", e))
+}
+
+#[tauri::command]
+fn save_layout(data: String) -> Result<(), String> {
+    let dir = config_path()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    fs::write(dir.join("layout.json"), data).map_err(|e| format!("Failed to write layout: {}", e))
+}
+
+#[tauri::command]
+fn load_layout() -> Result<String, String> {
+    let path = config_path()?.join("layout.json");
+    if !path.exists() {
+        return Ok("null".to_string());
+    }
+    fs::read_to_string(path).map_err(|e| format!("Failed: {}", e))
+}
+
+#[tauri::command]
+fn get_home_dir() -> Result<String, String> {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "Could not find home directory".to_string())
 }
 
 #[tauri::command]
@@ -350,7 +415,12 @@ pub fn run() {
             add_worktree,
             remove_worktree,
             get_repo_root,
+            get_home_dir,
             validate_repo_path,
+            save_workspaces,
+            load_workspaces,
+            save_layout,
+            load_layout,
             spawn_terminal,
             write_terminal,
             resize_terminal,

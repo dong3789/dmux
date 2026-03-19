@@ -20,20 +20,26 @@ function App() {
   const {
     layout, activePaneId, addPane, splitPane,
     closePane, setActivePaneId, updateSizes,
+    loaded: paneLoaded,
   } = usePaneLayout();
 
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [error, setError] = useState('');
   const initialSpawned = useRef(false);
 
-  // Spawn a default terminal on first load
+  // Spawn a default terminal only if no saved layout
   useEffect(() => {
     if (initialSpawned.current) return;
+    if (!paneLoaded) return;
     initialSpawned.current = true;
-    const home = '/Users/yoon';
-    termCounter++;
-    addPane(`shell-${termCounter}`, home);
-  }, []);
+    if (!layout) {
+      (async () => {
+        const home = await invoke<string>('get_home_dir').catch(() => '/tmp');
+        termCounter++;
+        addPane(`shell-${termCounter}`, home);
+      })();
+    }
+  }, [paneLoaded]);
 
   const fetchWorktrees = useCallback(async () => {
     if (!activeWorkspace) { setWorktrees([]); return; }
@@ -52,9 +58,10 @@ function App() {
   }, [fetchWorktrees]);
 
   // Open new default terminal
-  const openNewTerminal = useCallback(() => {
+  const openNewTerminal = useCallback(async () => {
     termCounter++;
-    const cwd = activeWorkspace?.repoPath || '/Users/yoon';
+    const cwd = activeWorkspace?.repoPath
+      || await invoke<string>('get_home_dir').catch(() => '/tmp');
     addPane(`shell-${termCounter}`, cwd);
   }, [addPane, activeWorkspace]);
 

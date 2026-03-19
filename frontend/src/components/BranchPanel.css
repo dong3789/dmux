@@ -106,9 +106,8 @@
 
 .branch-name {
   font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-all;
+  font-size: 12px;
 }
 
 .branch-status-spacer {
