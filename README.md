@@ -54,13 +54,16 @@ dmux is a standalone desktop terminal application that combines:
 
 ## Getting Started
 
-### Prerequisites
+### macOS / Linux
+
+#### Prerequisites
 
 - [Rust](https://rustup.rs/) (1.77+)
 - [Node.js](https://nodejs.org/) (18+)
 - Git
+- tmux (`brew install tmux`)
 
-### Development
+#### Development
 
 ```bash
 cd frontend
@@ -68,7 +71,7 @@ npm install
 cargo tauri dev
 ```
 
-### Build
+#### Build
 
 ```bash
 cd frontend
@@ -78,6 +81,55 @@ cargo tauri build
 The built app will be at:
 - **macOS**: `src-tauri/target/release/bundle/macos/dmux.app`
 - **DMG**: `src-tauri/target/release/bundle/dmg/dmux_*.dmg`
+
+### Windows (WSL)
+
+#### Prerequisites
+
+1. **WSL 2 설치**
+   ```powershell
+   wsl --install
+   ```
+
+2. **WSL 안에서 의존성 설치**
+   ```bash
+   wsl
+   sudo apt update
+   sudo apt install -y tmux git
+   ```
+
+3. **Windows 측 설치**
+   - [Rust](https://rustup.rs/) (1.77+)
+   - [Node.js](https://nodejs.org/) (18+)
+   - [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (C++ 빌드 도구)
+
+#### Development
+
+```powershell
+cd frontend
+npm install
+cargo tauri dev
+```
+
+#### How it works on Windows
+
+dmux는 Windows에서 WSL을 통해 tmux와 git을 실행합니다:
+- 터미널 세션: `wsl tmux attach-session -t <name>`
+- Git 명령: `wsl git worktree list`
+- 경로 자동 변환: `C:\Users\foo` ↔ `/mnt/c/Users/foo`
+
+WSL 내부의 tmux 데몬이 세션을 관리하므로, 앱을 껐다 켜도 터미널 세션이 유지됩니다.
+
+#### Build
+
+```powershell
+cd frontend
+cargo tauri build
+```
+
+The built app will be at:
+- **Windows**: `src-tauri\target\release\bundle\msi\dmux_*.msi`
+- **NSIS**: `src-tauri\target\release\bundle\nsis\dmux_*-setup.exe`
 
 ## Project Structure
 
@@ -96,7 +148,9 @@ dmux/
 │   │   ├── types.ts          # TypeScript types
 │   │   └── App.tsx           # Main app
 │   └── src-tauri/
-│       └── src/lib.rs        # Rust backend (PTY, git, tmux)
+│       └── src/
+│           ├── lib.rs        # Rust backend (PTY, git, tmux)
+│           └── platform.rs   # Platform abstraction (macOS/Windows WSL)
 └── README.md
 ```
 
