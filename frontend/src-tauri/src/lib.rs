@@ -1,9 +1,10 @@
+mod platform;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
@@ -46,7 +47,7 @@ fn spawn_terminal(
 ) -> Result<String, String> {
     // Check if already spawned
     {
-        let ptys = state.ptys.lock().unwrap();
+        let ptys = state.ptys.lock().map_err(|e| format!("Lock failed: {}", e))?;
         if ptys.contains_key(&session_name) {
             return Ok(session_name);
         }
@@ -64,23 +65,49 @@ fn spawn_terminal(
         .openpty(pty_size)
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    // Use tmux for session persistence — attach or create
-    let tmux_path = which::which("tmux")
-        .unwrap_or_else(|_| std::path::PathBuf::from("/opt/homebrew/bin/tmux"));
-    let mut cmd = CommandBuilder::new(tmux_path);
-    cmd.env("PATH", std::env::var("PATH")
-        .unwrap_or_else(|_| "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()));
-    cmd.arg("new-session");
-    cmd.arg("-A");  // attach if exists, create if not
-    cmd.arg("-s");
-    cmd.arg(&session_name);
-    if let Some(ref dir) = cwd {
-        cmd.arg("-c");
-        cmd.arg(dir);
+    // Check if tmux session already exists
+    let session_exists = platform::tmux_command(&["has-session", "-t", &session_name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !session_exists {
+        let shell_cwd = cwd.as_deref().map(|p| platform::to_shell_path(p));
+        let mut args = vec!["new-session", "-d", "-s", &session_name];
+        let cwd_str;
+        if let Some(ref dir) = shell_cwd {
+            cwd_str = dir.clone();
+            args.push("-c");
+            args.push(&cwd_str);
+        }
+        let create_output = platform::tmux_command(&args)
+            .output()
+            .map_err(|e| format!("Failed to create tmux session: {}", e))?;
+        if !create_output.status.success() {
+            return Err(format!("tmux new-session failed: {}", String::from_utf8_lossy(&create_output.stderr)));
+        }
     }
+
+    // Suppress tmux UI on this session
+    let _ = platform::tmux_command(&["set-option", "-t", &session_name, "status", "off"]).output();
+    let _ = platform::tmux_command(&["set-option", "-t", &session_name, "prefix", "None"]).output();
+
+    // Attach to the session via PTY
+    let (program, base_args) = platform::tmux_pty_program();
+    let mut cmd = CommandBuilder::new(&program);
+    for arg in &base_args {
+        cmd.arg(arg);
+    }
+    cmd.arg("attach-session");
+    cmd.arg("-t");
+    cmd.arg(&session_name);
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("LC_ALL", "en_US.UTF-8");
     cmd.env("TERM", "xterm-256color");
+    if !cfg!(target_os = "windows") {
+        cmd.env("PATH", std::env::var("PATH")
+            .unwrap_or_else(|_| "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()));
+    }
 
     let _child = pair
         .slave
@@ -102,7 +129,7 @@ fn spawn_terminal(
     let id = session_name.clone();
 
     {
-        let mut ptys = state.ptys.lock().unwrap();
+        let mut ptys = state.ptys.lock().map_err(|e| format!("Lock failed: {}", e))?;
         ptys.insert(
             id.clone(),
             PtyInstance { writer, master: pair.master },
@@ -123,7 +150,10 @@ fn spawn_terminal(
                         Err(e) => e.valid_up_to(),
                     };
                     if valid_up_to > 0 {
-                        let data = String::from_utf8(pending[..valid_up_to].to_vec()).unwrap();
+                        let data = match String::from_utf8(pending[..valid_up_to].to_vec()) {
+                            Ok(s) => s,
+                            Err(_) => { pending.drain(..valid_up_to); continue; }
+                        };
                         let _ = app.emit(&event_name, data);
                         pending.drain(..valid_up_to);
                     }
@@ -138,7 +168,7 @@ fn spawn_terminal(
 
 #[tauri::command]
 fn write_terminal(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
-    let mut ptys = state.ptys.lock().unwrap();
+    let mut ptys = state.ptys.lock().map_err(|e| format!("Lock failed: {}", e))?;
     if let Some(pty) = ptys.get_mut(&id) {
         pty.writer.write_all(data.as_bytes()).map_err(|e| format!("Write failed: {}", e))?;
         pty.writer.flush().map_err(|e| format!("Flush failed: {}", e))?;
@@ -150,7 +180,7 @@ fn write_terminal(state: State<'_, AppState>, id: String, data: String) -> Resul
 
 #[tauri::command]
 fn resize_terminal(state: State<'_, AppState>, id: String, rows: u16, cols: u16) -> Result<(), String> {
-    let ptys = state.ptys.lock().unwrap();
+    let ptys = state.ptys.lock().map_err(|e| format!("Lock failed: {}", e))?;
     if let Some(pty) = ptys.get(&id) {
         pty.master
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
@@ -161,8 +191,12 @@ fn resize_terminal(state: State<'_, AppState>, id: String, rows: u16, cols: u16)
 
 #[tauri::command]
 fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let mut ptys = state.ptys.lock().unwrap();
+    let mut ptys = state.ptys.lock().map_err(|e| format!("Lock failed: {}", e))?;
     ptys.remove(&id);
+    drop(ptys);
+
+    // Kill the tmux session
+    let _ = platform::tmux_command(&["kill-session", "-t", &id]).output();
     Ok(())
 }
 
@@ -207,30 +241,30 @@ fn load_layout() -> Result<String, String> {
 
 #[tauri::command]
 fn get_home_dir() -> Result<String, String> {
-    dirs::home_dir()
-        .map(|p| p.to_string_lossy().to_string())
+    platform::home_dir()
         .ok_or_else(|| "Could not find home directory".to_string())
 }
 
 #[tauri::command]
 fn validate_repo_path(path: String) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
+    let output = platform::git_command(&["rev-parse", "--show-toplevel"])
         .current_dir(&path)
         .output()
         .map_err(|e| format!("Failed: {}", e))?;
     if !output.status.success() {
         return Err("Not a valid git repository".to_string());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // On Windows, convert WSL path back to native
+    Ok(if cfg!(target_os = "windows") { platform::from_shell_path(&result) } else { result })
 }
 
 #[tauri::command]
 fn list_sessions() -> Result<Vec<TmuxSession>, String> {
-    let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_created_string}\t#{session_attached}"])
-        .output()
-        .map_err(|e| format!("Failed to run tmux: {}", e))?;
+    let output = platform::tmux_command(&[
+        "list-sessions", "-F",
+        "#{session_name}\t#{session_windows}\t#{session_created_string}\t#{session_attached}"
+    ]).output().map_err(|e| format!("Failed to run tmux: {}", e))?;
 
     if !output.status.success() {
         return Ok(vec![]);
@@ -256,12 +290,17 @@ fn list_sessions() -> Result<Vec<TmuxSession>, String> {
 
 #[tauri::command]
 fn create_session(name: String, path: Option<String>) -> Result<(), String> {
-    let mut cmd = Command::new("tmux");
-    cmd.args(["new-session", "-d", "-s", &name]);
-    if let Some(p) = path {
-        cmd.args(["-c", &p]);
+    let shell_path = path.as_deref().map(|p| platform::to_shell_path(p));
+    let mut args = vec!["new-session", "-d", "-s", &name];
+    let cwd_str;
+    if let Some(ref p) = shell_path {
+        cwd_str = p.clone();
+        args.push("-c");
+        args.push(&cwd_str);
     }
-    let output = cmd.output().map_err(|e| format!("Failed: {}", e))?;
+    let output = platform::tmux_command(&args)
+        .output()
+        .map_err(|e| format!("Failed: {}", e))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
@@ -270,8 +309,7 @@ fn create_session(name: String, path: Option<String>) -> Result<(), String> {
 
 #[tauri::command]
 fn kill_session(name: String) -> Result<(), String> {
-    let output = Command::new("tmux")
-        .args(["kill-session", "-t", &name])
+    let output = platform::tmux_command(&["kill-session", "-t", &name])
         .output()
         .map_err(|e| format!("Failed: {}", e))?;
     if !output.status.success() {
@@ -282,11 +320,9 @@ fn kill_session(name: String) -> Result<(), String> {
 
 #[tauri::command]
 fn list_worktrees(repo_path: String) -> Result<Vec<Worktree>, String> {
-    let output = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&repo_path)
-        .output()
-        .map_err(|e| format!("Failed to run git: {}", e))?;
+    let mut cmd = platform::git_command(&["worktree", "list", "--porcelain"]);
+    cmd.current_dir(&repo_path);
+    let output = cmd.output().map_err(|e| format!("Failed to run git: {}", e))?;
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
@@ -311,8 +347,9 @@ fn list_worktrees(repo_path: String) -> Result<Vec<Worktree>, String> {
                 }
                 worktrees.push(current.clone());
             }
+            let raw_path = line.strip_prefix("worktree ").unwrap_or("").to_string();
             current = Worktree {
-                path: line.strip_prefix("worktree ").unwrap_or("").to_string(),
+                path: if cfg!(target_os = "windows") { platform::from_shell_path(&raw_path) } else { raw_path },
                 branch: String::new(), head: String::new(),
                 is_bare: false, is_main: false, status: "clean".to_string(), changed_files: 0,
             };
@@ -341,52 +378,116 @@ fn list_worktrees(repo_path: String) -> Result<Vec<Worktree>, String> {
 }
 
 fn get_worktree_status(path: &str) -> Result<u32, String> {
-    let output = Command::new("git")
-        .args(["status", "--short"])
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("Failed: {}", e))?;
+    let mut cmd = platform::git_command(&["status", "--short"]);
+    cmd.current_dir(path);
+    let output = cmd.output().map_err(|e| format!("Failed: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout.lines().filter(|l| !l.is_empty()).count() as u32)
 }
 
+fn worktree_meta_path() -> Result<PathBuf, String> {
+    Ok(config_path()?.join("worktree-meta.json"))
+}
+
+fn load_worktree_meta_map() -> HashMap<String, serde_json::Value> {
+    let path = match worktree_meta_path() {
+        Ok(p) => p,
+        Err(_) => return HashMap::new(),
+    };
+    if !path.exists() { return HashMap::new(); }
+    let data = fs::read_to_string(path).unwrap_or_default();
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+fn save_worktree_meta_map(map: &HashMap<String, serde_json::Value>) {
+    if let Ok(dir) = config_path() {
+        let _ = fs::create_dir_all(&dir);
+        if let Ok(path) = worktree_meta_path() {
+            let _ = fs::write(path, serde_json::to_string(map).unwrap_or_default());
+        }
+    }
+}
+
 #[tauri::command]
-fn add_worktree(repo_path: String, name: String, branch: String) -> Result<String, String> {
-    let wt_path = format!("{}/../{}", repo_path, name);
-    let output = Command::new("git")
-        .args(["worktree", "add", "-b", &branch, &wt_path])
-        .current_dir(&repo_path)
-        .output()
-        .map_err(|e| format!("Failed: {}", e))?;
+fn get_worktree_meta(wt_path: String) -> Result<String, String> {
+    let map = load_worktree_meta_map();
+    match map.get(&wt_path) {
+        Some(v) => Ok(v.to_string()),
+        None => Ok("null".to_string()),
+    }
+}
+
+#[tauri::command]
+fn add_worktree(repo_path: String, name: String, branch: String, base_branch: Option<String>) -> Result<String, String> {
+    let repo = PathBuf::from(&repo_path);
+    let wt_path = repo.parent()
+        .ok_or_else(|| "Cannot determine parent directory of repo".to_string())?
+        .join(&name);
+    let wt_path_str = platform::to_shell_path(&wt_path.to_string_lossy());
+    let effective_base = base_branch.clone().unwrap_or_else(|| "HEAD".to_string());
+
+    let mut args = vec!["worktree", "add", "-b", &branch, &wt_path_str];
+    let base_ref;
+    if let Some(ref base) = base_branch {
+        base_ref = base.clone();
+        args.push(&base_ref);
+    }
+
+    let mut cmd = platform::git_command(&args);
+    cmd.current_dir(&repo_path);
+    let output = cmd.output().map_err(|e| format!("Failed: {}", e))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
-    Ok(wt_path)
+
+    let canonical = wt_path.canonicalize().unwrap_or(wt_path);
+    let canonical_str = canonical.to_string_lossy().to_string();
+
+    // Save metadata
+    let mut map = load_worktree_meta_map();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    map.insert(canonical_str.clone(), serde_json::json!({
+        "baseBranch": effective_base,
+        "branch": branch,
+        "createdAt": timestamp,
+    }));
+    save_worktree_meta_map(&map);
+
+    Ok(canonical_str)
 }
 
 #[tauri::command]
 fn remove_worktree(repo_path: String, wt_path: String) -> Result<(), String> {
-    let output = Command::new("git")
-        .args(["worktree", "remove", &wt_path])
-        .current_dir(&repo_path)
-        .output()
-        .map_err(|e| format!("Failed: {}", e))?;
+    let shell_wt = platform::to_shell_path(&wt_path);
+    let mut cmd = platform::git_command(&["worktree", "remove", &shell_wt]);
+    cmd.current_dir(&repo_path);
+    let output = cmd.output().map_err(|e| format!("Failed: {}", e))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
+    let mut map = load_worktree_meta_map();
+    map.remove(&wt_path);
+    save_worktree_meta_map(&map);
     Ok(())
 }
 
 #[tauri::command]
 fn get_repo_root() -> Result<String, String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|e| format!("Failed: {}", e))?;
+    let mut cmd = platform::git_command(&["rev-parse", "--show-toplevel"]);
+    let output = cmd.output().map_err(|e| format!("Failed: {}", e))?;
     if !output.status.success() {
         return Err("Not in a git repository".to_string());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if cfg!(target_os = "windows") { platform::from_shell_path(&result) } else { result })
+}
+
+#[tauri::command]
+fn check_dependencies() -> Result<(), String> {
+    platform::check_deps()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -425,6 +526,8 @@ pub fn run() {
             write_terminal,
             resize_terminal,
             close_terminal,
+            check_dependencies,
+            get_worktree_meta,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

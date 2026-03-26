@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { LayoutNode, PaneNode, SplitNode, SplitDirection } from '../types';
+import { destroyPty } from '../components/TerminalPane';
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 10);
@@ -162,6 +163,19 @@ export function usePaneLayout() {
   const closePane = useCallback((paneId: string) => {
     setLayout(prev => {
       if (!prev) return prev;
+
+      // Find the pane's sessionName before removing, to destroy its PTY
+      const findPane = (node: LayoutNode): PaneNode | null => {
+        if (node.type === 'terminal') return node.id === paneId ? node : null;
+        for (const child of node.children) {
+          const found = findPane(child);
+          if (found) return found;
+        }
+        return null;
+      };
+      const pane = findPane(prev);
+      if (pane) destroyPty(pane.sessionName);
+
       if (prev.type === 'terminal' && prev.id === paneId) {
         setActivePaneId(null);
         return null;
@@ -171,7 +185,18 @@ export function usePaneLayout() {
         setActivePaneId(null);
         return null;
       }
-      if (result !== null) return result;
+      if (result !== null) {
+        const findFirst = (node: LayoutNode): string | null => {
+          if (node.type === 'terminal') return node.id;
+          for (const child of node.children) {
+            const found = findFirst(child);
+            if (found) return found;
+          }
+          return null;
+        };
+        setActivePaneId(findFirst(result));
+        return result;
+      }
       return prev;
     });
   }, []);

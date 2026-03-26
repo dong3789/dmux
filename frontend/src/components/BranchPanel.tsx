@@ -1,12 +1,19 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import type { Worktree } from '../types';
 import './BranchPanel.css';
+
+interface WorktreeMeta {
+  baseBranch: string;
+  branch: string;
+  createdAt: string;
+}
 
 interface Props {
   workspaceName: string;
   worktrees: Worktree[];
   onOpenBranch: (wt: Worktree) => void;
-  onAddBranch: (branchName: string) => void;
+  onAddBranch: (branchName: string, baseBranch: string) => void;
   onRemoveBranch: (path: string) => void;
 }
 
@@ -14,12 +21,30 @@ export function BranchPanel({ workspaceName, worktrees, onOpenBranch, onAddBranc
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showInput, setShowInput] = useState(false);
   const [branchName, setBranchName] = useState('');
+  const [baseBranch, setBaseBranch] = useState('');
   const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
+  const [metaMap, setMetaMap] = useState<Record<string, WorktreeMeta>>({});
+
+  // Load metadata for all worktrees
+  useEffect(() => {
+    (async () => {
+      const map: Record<string, WorktreeMeta> = {};
+      for (const wt of worktrees) {
+        try {
+          const json = await invoke<string>('get_worktree_meta', { wtPath: wt.path });
+          const parsed = JSON.parse(json);
+          if (parsed) map[wt.path] = parsed;
+        } catch { /* no meta */ }
+      }
+      setMetaMap(map);
+    })();
+  }, [worktrees]);
 
   const handleAdd = () => {
     if (branchName.trim()) {
-      onAddBranch(branchName.trim());
+      onAddBranch(branchName.trim(), baseBranch);
       setBranchName('');
+      setBaseBranch('');
       setShowInput(false);
     }
   };
@@ -50,9 +75,22 @@ export function BranchPanel({ workspaceName, worktrees, onOpenBranch, onAddBranc
             onChange={e => setBranchName(e.target.value)}
             onKeyDown={e => {
               if (e.key === 'Enter') handleAdd();
-              if (e.key === 'Escape') { setShowInput(false); setBranchName(''); }
+              if (e.key === 'Escape') { setShowInput(false); setBranchName(''); setBaseBranch(''); }
             }}
           />
+          <div className="bp-base-row">
+            <span className="bp-base-label">from</span>
+            <select
+              className="bp-select"
+              value={baseBranch}
+              onChange={e => setBaseBranch(e.target.value)}
+            >
+              <option value="">HEAD (current)</option>
+              {worktrees.filter(wt => wt.branch).map(wt => (
+                <option key={wt.path} value={wt.branch}>{wt.branch}</option>
+              ))}
+            </select>
+          </div>
           <button className="bp-btn-open" onClick={handleAdd}>Create</button>
         </div>
       )}
@@ -61,6 +99,7 @@ export function BranchPanel({ workspaceName, worktrees, onOpenBranch, onAddBranc
         {worktrees.map(wt => {
           const isExpanded = expandedId === wt.path;
           const isConfirming = confirmDeletePath === wt.path;
+          const meta = metaMap[wt.path];
           return (
             <div key={wt.path} className="accordion-item">
               <div
@@ -71,6 +110,7 @@ export function BranchPanel({ workspaceName, worktrees, onOpenBranch, onAddBranc
                 <span className={`branch-icon ${wt.is_main ? 'main' : ''}`}>⎇</span>
                 <span className="branch-name">{wt.branch || 'detached'}</span>
                 {wt.is_main && <span className="tag-main">main</span>}
+                {meta && <span className="tag-base">← {meta.baseBranch}</span>}
                 <span className="branch-status-spacer" />
                 {wt.changed_files === 0 ? (
                   <span className="tag-clean">✓</span>
@@ -85,6 +125,12 @@ export function BranchPanel({ workspaceName, worktrees, onOpenBranch, onAddBranc
                     <span className="detail-label">HEAD</span>
                     <code className="detail-hash">{wt.head.substring(0, 7)}</code>
                   </div>
+                  {meta && (
+                    <div className="accordion-detail">
+                      <span className="detail-label">Base</span>
+                      <span className="detail-base">{meta.baseBranch}</span>
+                    </div>
+                  )}
                   <div className="accordion-detail">
                     <span className="detail-label">Path</span>
                     <span className="detail-path">{wt.path.split('/').slice(-2).join('/')}</span>
