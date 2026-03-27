@@ -411,10 +411,131 @@ fn save_worktree_meta_map(map: &HashMap<String, serde_json::Value>) {
 #[tauri::command]
 fn get_worktree_meta(wt_path: String) -> Result<String, String> {
     let map = load_worktree_meta_map();
-    match map.get(&wt_path) {
-        Some(v) => Ok(v.to_string()),
+    if let Some(v) = map.get(&wt_path) {
+        return Ok(v.to_string());
+    }
+
+    // No saved metadata — infer base branch via git merge-base
+    // Compare this branch against common base branches (main, master, develop)
+    let candidates = ["main", "master", "develop"];
+    let mut cmd = platform::git_command(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    cmd.current_dir(&wt_path);
+    let head_output = cmd.output().ok();
+    let current_branch = head_output
+        .as_ref()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if current_branch.is_empty() {
+        return Ok("null".to_string());
+    }
+
+    // Don't infer for main/master themselves
+    if candidates.contains(&current_branch.as_str()) {
+        return Ok("null".to_string());
+    }
+
+    let mut best_base: Option<(String, usize)> = None;
+    for candidate in &candidates {
+        // Check if candidate branch exists
+        let mut check = platform::git_command(&["rev-parse", "--verify", candidate]);
+        check.current_dir(&wt_path);
+        if !check.output().map(|o| o.status.success()).unwrap_or(false) {
+            continue;
+        }
+
+        // Count commits since merge-base (fewer = closer parent)
+        let mut mb_cmd = platform::git_command(&["rev-list", "--count", &format!("{}..HEAD", candidate)]);
+        mb_cmd.current_dir(&wt_path);
+        if let Ok(output) = mb_cmd.output() {
+            if output.status.success() {
+                let count: usize = String::from_utf8_lossy(&output.stdout).trim().parse().unwrap_or(usize::MAX);
+                if best_base.as_ref().map_or(true, |(_, c)| count < *c) {
+                    best_base = Some((candidate.to_string(), count));
+                }
+            }
+        }
+    }
+
+    match best_base {
+        Some((base, _)) => Ok(serde_json::json!({
+            "baseBranch": base,
+            "branch": current_branch,
+            "inferred": true,
+        }).to_string()),
         None => Ok("null".to_string()),
     }
+}
+
+#[tauri::command]
+fn rebase_worktree(wt_path: String, new_base: String) -> Result<(), String> {
+    // Get current base via merge-base
+    let mut head_cmd = platform::git_command(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    head_cmd.current_dir(&wt_path);
+    let head_out = head_cmd.output().map_err(|e| format!("Failed: {}", e))?;
+    let current_branch = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
+
+    // Find old merge-base
+    let mut mb_cmd = platform::git_command(&["merge-base", &new_base, "HEAD"]);
+    mb_cmd.current_dir(&wt_path);
+    let _mb_out = mb_cmd.output().map_err(|e| format!("Failed: {}", e))?;
+
+    // Rebase onto new base
+    let mut rebase_cmd = platform::git_command(&["rebase", "--onto", &new_base, &format!("{}@{{upstream}}", current_branch)]);
+    rebase_cmd.current_dir(&wt_path);
+    let rebase_out = rebase_cmd.output();
+
+    // If upstream rebase fails, try simple rebase
+    if rebase_out.is_err() || !rebase_out.as_ref().unwrap().status.success() {
+        let mut simple_cmd = platform::git_command(&["rebase", &new_base]);
+        simple_cmd.current_dir(&wt_path);
+        let simple_out = simple_cmd.output().map_err(|e| format!("Failed: {}", e))?;
+        if !simple_out.status.success() {
+            // Abort failed rebase
+            let mut abort = platform::git_command(&["rebase", "--abort"]);
+            abort.current_dir(&wt_path);
+            let _ = abort.output();
+            return Err(format!("Rebase failed: {}", String::from_utf8_lossy(&simple_out.stderr)));
+        }
+    }
+
+    // Update metadata
+    let mut map = load_worktree_meta_map();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    map.insert(wt_path.clone(), serde_json::json!({
+        "baseBranch": new_base,
+        "branch": current_branch,
+        "createdAt": timestamp,
+    }));
+    save_worktree_meta_map(&map);
+
+    Ok(())
+}
+
+#[tauri::command]
+fn update_worktree_meta(wt_path: String, base_branch: String) -> Result<(), String> {
+    // Update metadata only (no rebase)
+    let mut head_cmd = platform::git_command(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    head_cmd.current_dir(&wt_path);
+    let head_out = head_cmd.output().map_err(|e| format!("Failed: {}", e))?;
+    let current_branch = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
+
+    let mut map = load_worktree_meta_map();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    map.insert(wt_path, serde_json::json!({
+        "baseBranch": base_branch,
+        "branch": current_branch,
+        "createdAt": timestamp,
+    }));
+    save_worktree_meta_map(&map);
+    Ok(())
 }
 
 #[tauri::command]
@@ -528,6 +649,8 @@ pub fn run() {
             close_terminal,
             check_dependencies,
             get_worktree_meta,
+            rebase_worktree,
+            update_worktree_meta,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
