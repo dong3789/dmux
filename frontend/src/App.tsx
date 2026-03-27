@@ -14,7 +14,7 @@ let termCounter = 0;
 function App() {
   const {
     workspaces, activeWorkspace, activeWorkspaceId,
-    setActiveWorkspaceId, addWorkspace,
+    setActiveWorkspaceId, addWorkspace, removeWorkspace,
   } = useWorkspaces();
 
   const {
@@ -25,7 +25,15 @@ function App() {
 
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [error, setError] = useState('');
+  const [depError, setDepError] = useState('');
   const initialSpawned = useRef(false);
+
+  // Check dependencies on mount
+  useEffect(() => {
+    invoke('check_dependencies').catch((e: any) => {
+      setDepError(e.toString());
+    });
+  }, []);
 
   // Spawn a default terminal only if no saved layout
   useEffect(() => {
@@ -106,7 +114,7 @@ function App() {
     addPane(sessionName, wt.path);
   };
 
-  const handleAddBranch = async (branchName: string) => {
+  const handleAddBranch = async (branchName: string, baseBranch: string) => {
     if (!activeWorkspace) return;
     try {
       const name = branchName.replace(/\//g, '-');
@@ -114,6 +122,7 @@ function App() {
         repoPath: activeWorkspace.repoPath,
         name,
         branch: branchName,
+        baseBranch: baseBranch || null,
       });
       await fetchWorktrees();
     } catch (e: any) {
@@ -138,6 +147,7 @@ function App() {
         activeWorkspaceId={activeWorkspaceId}
         onSelectWorkspace={setActiveWorkspaceId}
         onAddWorkspace={handleAddWorkspace}
+        onRemoveWorkspace={removeWorkspace}
       />
 
       {activeWorkspace ? (
@@ -156,6 +166,9 @@ function App() {
       )}
 
       <main className="main-content">
+        {depError && (
+          <div className="error-bar dep-error">{depError}</div>
+        )}
         {error && (
           <div className="error-bar" onClick={() => setError('')}>{error}</div>
         )}

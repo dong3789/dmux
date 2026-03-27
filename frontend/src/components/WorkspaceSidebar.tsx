@@ -7,10 +7,17 @@ interface Props {
   activeWorkspaceId: string | null;
   onSelectWorkspace: (id: string) => void;
   onAddWorkspace: () => void;
+  onRemoveWorkspace?: (id: string) => void;
 }
 
-export function WorkspaceSidebar({ workspaces, activeWorkspaceId, onSelectWorkspace, onAddWorkspace }: Props) {
+export function WorkspaceSidebar({ workspaces, activeWorkspaceId, onSelectWorkspace, onAddWorkspace, onRemoveWorkspace }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const handleContextMenu = (e: React.MouseEvent, wsId: string) => {
+    e.preventDefault();
+    setConfirmDeleteId(wsId);
+  };
 
   return (
     <div className="ws-sidebar">
@@ -22,13 +29,20 @@ export function WorkspaceSidebar({ workspaces, activeWorkspaceId, onSelectWorksp
             key={ws.id}
             className={`ws-item ${ws.id === activeWorkspaceId ? 'active' : ''}`}
             onClick={() => onSelectWorkspace(ws.id)}
+            onContextMenu={(e) => handleContextMenu(e, ws.id)}
             onMouseEnter={() => setHoveredId(ws.id)}
-            onMouseLeave={() => setHoveredId(null)}
+            onMouseLeave={() => { setHoveredId(null); setConfirmDeleteId(null); }}
           >
             <div className="ws-icon">{ws.name.charAt(0).toUpperCase()}</div>
-            {hoveredId === ws.id && (
+            {confirmDeleteId === ws.id && onRemoveWorkspace ? (
+              <div className="ws-tooltip ws-delete-confirm">
+                <span>Remove?</span>
+                <button className="ws-delete-yes" onClick={(e) => { e.stopPropagation(); onRemoveWorkspace(ws.id); setConfirmDeleteId(null); }}>Yes</button>
+                <button className="ws-delete-no" onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}>No</button>
+              </div>
+            ) : hoveredId === ws.id ? (
               <div className="ws-tooltip">{ws.name}</div>
-            )}
+            ) : null}
           </div>
         ))}
       </div>

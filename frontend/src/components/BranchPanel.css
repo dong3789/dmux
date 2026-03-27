@@ -59,6 +59,36 @@
   border-color: var(--accent);
 }
 
+.bp-base-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.bp-base-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.bp-select {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  outline: none;
+  cursor: pointer;
+}
+
+.bp-select:focus {
+  border-color: var(--accent);
+}
+
 .branch-list {
   flex: 1;
   overflow-y: auto;
@@ -130,6 +160,100 @@
 .tag-changed {
   font-size: 11px;
   color: var(--accent-amber);
+}
+
+.tag-base {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.tag-base.inferred {
+  opacity: 0.6;
+}
+
+.detail-base {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--accent-purple);
+  background: rgba(188, 140, 255, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.bp-btn-change-base {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 1px 4px;
+  margin-left: 4px;
+}
+
+.bp-btn-change-base:hover {
+  color: var(--accent);
+}
+
+.base-change-form {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.bp-select-sm {
+  font-size: 11px;
+  padding: 2px 4px;
+  max-width: 120px;
+}
+
+.bp-btn-sm {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: none;
+  cursor: pointer;
+}
+
+.bp-btn-rebase {
+  background: var(--accent-purple);
+  color: #fff;
+}
+
+.bp-btn-rebase:hover {
+  opacity: 0.85;
+}
+
+.bp-btn-rebase:disabled,
+.bp-btn-label-only:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bp-btn-label-only {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.bp-btn-label-only:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.bp-btn-cancel {
+  background: none;
+  color: var(--text-muted);
+}
+
+.bp-btn-cancel:hover {
+  color: var(--accent-red);
+}
+
+.rebase-error {
+  font-size: 11px;
+  color: var(--accent-red);
+  padding: 2px 0 2px 32px;
+  white-space: pre-line;
 }
 
 .accordion-body {
